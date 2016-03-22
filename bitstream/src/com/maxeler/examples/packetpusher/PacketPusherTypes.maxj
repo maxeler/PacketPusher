@@ -1,0 +1,7 @@
+package com.maxeler.examples.packetpusher;
+
+import com.maxeler.networking.v1.kernel_types.EthernetTXType;
+
+public class PacketPusherTypes {
+	public static final EthernetTXType txLinkType = new EthernetTXType();
+}

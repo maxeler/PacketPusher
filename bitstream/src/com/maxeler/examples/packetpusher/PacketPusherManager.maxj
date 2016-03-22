@@ -1,0 +1,47 @@
+package com.maxeler.examples.packetpusher;
+
+import com.maxeler.maxcompiler.v2.build.EngineParameters;
+import com.maxeler.maxcompiler.v2.managers.BuildConfig;
+import com.maxeler.maxcompiler.v2.managers.BuildConfig.Effort;
+import com.maxeler.maxcompiler.v2.managers.BuildConfig.OptimizationTechnique;
+import com.maxeler.maxcompiler.v2.managers.custom.ManagerClock;
+import com.maxeler.maxcompiler.v2.managers.custom.blocks.StateMachineBlock;
+import com.maxeler.maxcompiler.v2.managers.custom.stdlib.DebugLevel;
+import com.maxeler.networking.v1.managers.NetworkManager;
+import com.maxeler.networking.v1.managers.netlib.EthernetChecksumMode;
+import com.maxeler.networking.v1.managers.netlib.EthernetStream;
+import com.maxeler.networking.v1.managers.netlib.Max4NetworkConnection;
+
+
+public class PacketPusherManager extends NetworkManager {
+
+	public PacketPusherManager(EngineParameters configuration) {
+		super(configuration);
+
+		debug.setDebugLevel(new DebugLevel().setHasStreamStatus(true));
+		EthernetStream ethBot1 = addEthernetStream("ethBot1", Max4NetworkConnection.QSFP_BOT_10G_PORT1, EthernetChecksumMode.FlagOnEOF);
+
+		ManagerClock netClk = getNetworkClock(Max4NetworkConnection.QSFP_BOT_10G_PORT1);
+		pushDefaultClock(netClk);
+
+		StateMachineBlock sm = addStateMachine("packetPusherStateMachine", new PacketPusherStateMachine(this));
+		sm.getInput("input") <== addStreamFromCPU("fromCPU");
+		ethBot1.getTransmitStream() <== sm.getOutput("output");
+	}
+
+	public static void main(String[] args) {
+		PacketPusherParameters params = new PacketPusherParameters(args);
+		PacketPusherManager manager = new PacketPusherManager(params);
+
+		BuildConfig bc = manager.getBuildConfig();
+		bc.setBuildEffort(Effort.VERY_HIGH);
+		bc.setOptimizationGoal(OptimizationTechnique.SPEED);
+		bc.setMPPRCostTableSearchRange(params.getMPPRStartCT(), params.getMPPREndCT());
+		bc.setMPPRParallelism(params.getMPPRThreads());
+		bc.setMPPRRetryNearMissesThreshold(params.getMPPRRetryThreshold());
+		//bc.setEnableChipscopeInserter(true);
+
+		manager.build();
+	}
+
+}

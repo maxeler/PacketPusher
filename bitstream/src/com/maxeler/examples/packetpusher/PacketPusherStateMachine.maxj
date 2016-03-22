@@ -1,0 +1,110 @@
+package com.maxeler.examples.packetpusher;
+
+import com.maxeler.maxcompiler.v2.managers.DFEManager;
+import com.maxeler.maxcompiler.v2.statemachine.DFEsmAssignableValue;
+import com.maxeler.maxcompiler.v2.statemachine.DFEsmStateValue;
+import com.maxeler.maxcompiler.v2.statemachine.DFEsmValue;
+import com.maxeler.maxcompiler.v2.statemachine.manager.DFEsmPullInput;
+import com.maxeler.maxcompiler.v2.statemachine.manager.DFEsmPushOutput;
+import com.maxeler.maxcompiler.v2.statemachine.manager.ManagerStateMachine;
+import com.maxeler.statemachine.utils.SMUtils;
+
+public class PacketPusherStateMachine extends ManagerStateMachine {
+
+	public PacketPusherStateMachine(DFEManager owner) {
+		super(owner);
+
+		/** Internal state */
+		/* Number of cycles since the last SOF */
+		DFEsmStateValue sDelayCount = state.value(dfeUInt(64), 0);
+		sDelayCount.next <== sDelayCount + 1;
+		/* Minimum number of cycles between the last SOF and the next one */
+		DFEsmStateValue sDelayMax = state.value(dfeUInt(64), 0);
+		DFEsmAssignableValue curDelayMax = assignable.value(dfeUInt(64));
+		curDelayMax <== sDelayMax;
+		/* Number of words read in this frame so far */
+		// Initial state is special - only state in which the next value of sWordCount
+		// should be zero, but eof is false
+		DFEsmStateValue sWordCount = state.value(dfeUInt(32), 0xffffffffL);
+		/* Total number of bytes in the frame (including header) */
+		DFEsmStateValue sFrameLenBytes = state.value(dfeUInt(32), 24);
+
+		/** PCAP input */
+		/* Input stream format:
+		 * Word 1: Time (in tenths of nanoseconds) to wait before transmission
+		 * Word 2: Length in bytes (including the two word header)
+		 * then data
+		 */
+		DFEsmPullInput iInput = io.pullInput("input", dfeUInt(64));
+		iInput.read <== false;
+		DFEsmValue sof = sWordCount === 2;
+		DFEsmAssignableValue eof = assignable.value(dfeBool());
+		IF(sFrameLenBytes.slice(0, 3) === 0) {
+			eof <== (sWordCount + 1) === (sFrameLenBytes >> 3);
+		} ELSE {
+			eof <== sWordCount === (sFrameLenBytes >> 3);
+		}
+		DFEsmAssignableValue mod = assignable.value(dfeUInt(3));
+		IF(eof) {
+			mod <== sFrameLenBytes.slice(0, 3);
+		} ELSE {
+			mod <== 0;
+		}
+		/* Whether a word was read last cycle */
+		DFEsmStateValue sInputValid = state.value(dfeBool(), false);
+		sInputValid.next <== false;
+
+		/** Frame output */
+		/* (needs a stall latency of 2 solely because SMUtils can't directly assign fields of an output) */
+		DFEsmPushOutput oOutput = io.pushOutput("output", dfeUInt(PacketPusherTypes.txLinkType.getDFEStructType().getTotalBits()), 2);
+		/* Pointless intermediate register (thanks again, SMUtils) */
+		DFEsmStateValue sOutputWord = state.value(dfeUInt(PacketPusherTypes.txLinkType.getDFEStructType().getTotalBits()));
+		SMUtils.assignField(sOutputWord.next, PacketPusherTypes.txLinkType.getDFEStructType(), PacketPusherTypes.txLinkType.getSOF(), sof);
+		SMUtils.assignField(sOutputWord.next, PacketPusherTypes.txLinkType.getDFEStructType(), PacketPusherTypes.txLinkType.getEOF(), eof);
+		SMUtils.assignField(sOutputWord.next, PacketPusherTypes.txLinkType.getDFEStructType(), PacketPusherTypes.txLinkType.getMod(), mod);
+		SMUtils.assignField(sOutputWord.next, PacketPusherTypes.txLinkType.getDFEStructType(), PacketPusherTypes.txLinkType.getData(), iInput);
+		/* Whether a word was written last cycle */
+		DFEsmStateValue sOutputValid = state.value(dfeBool(), false);
+		sOutputValid.next <== false;
+
+		IF(sInputValid) {
+			IF(sWordCount === 0) {
+				if(owner.isTargetSimulation()) {
+					sDelayMax.next <== iInput >> 17;
+					curDelayMax <== iInput >> 17;
+				} else {
+					sDelayMax.next <== iInput >> 6;
+					curDelayMax <== iInput >> 6;
+				}
+			} ELSE IF(sWordCount === 1) {
+				sFrameLenBytes.next <== iInput.cast(dfeUInt(32));
+				sDelayCount.next <== 2;
+			} ELSE {
+				sOutputValid.next <== true;
+			}
+			//debug.simPrintf("sDelayCount=%u curDelayMax=%u\n", sDelayCount, curDelayMax);
+		}
+
+		IF(sWordCount !== 0 | sDelayCount + 1 >= curDelayMax) {
+			IF(~iInput.empty & ~oOutput.stall) {
+				iInput.read <== true;
+				sInputValid.next <== true;
+				IF(eof) {
+					sWordCount.next <== 0;
+				} ELSE {
+					sWordCount.next <== sWordCount + 1;
+				}
+			}
+		}
+
+		/* THE PIPELINE:
+		 * Cycle 1: input read goes high
+		 * Cycle 2: input word received into register, output valid register goes high
+		 * Cycle 3: output word transmitted
+		 */
+
+		/* If the output was valid last cycle, transmit the output */
+		oOutput.valid <== sOutputValid;
+		oOutput <== sOutputWord;
+	}
+}
